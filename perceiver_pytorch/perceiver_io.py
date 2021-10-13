@@ -1,9 +1,9 @@
-from functools import wraps
-
 import torch
+from math import pi
+from functools import wraps
 from torch import nn, einsum
 import torch.nn.functional as F
-
+# noinspection PyProtectedMember
 from einops import rearrange, repeat
 
 # helpers
@@ -26,6 +26,18 @@ def cache_fn(f):
         cache = f(*args, **kwargs)
         return cache
     return cached_fn
+
+def fourier_encode(x, max_freq, num_bands = 4):
+    x = x.unsqueeze(-1)
+    device, dtype, orig_x = x.device, x.dtype, x
+
+    scales = torch.linspace(1., max_freq / 2, num_bands, device = device, dtype = dtype)
+    scales = scales[(*((None,) * (len(x.shape) - 1)), Ellipsis)]
+
+    x = x * scales * pi
+    x = torch.cat([x.sin(), x.cos()], dim = -1)
+    x = torch.cat((x, orig_x), dim = -1)
+    return x
 
 # helper classes
 
@@ -104,42 +116,62 @@ class Attention(nn.Module):
 class PerceiverIO(nn.Module):
     def __init__(
         self,
-        *,
-        depth,
-        dim,
-        queries_dim,
-        logits_dim = None,
+        input_dim,
+        num_input_axes,
+        queries_dim,  # ToDo: label this correctly
+        logits_dim,  # ToDo: label this correctly
+        network_depth,
         num_latents = 512,
-        latent_dim = 512,
-        cross_heads = 1,
-        latent_heads = 8,
-        cross_dim_head = 64,
-        latent_dim_head = 64,
-        weight_tie_layers = False,
+        latent_dim=512,
+        num_cross_att_heads=1,
+        num_self_att_heads=8,
+        cross_head_dim=64,
+        latent_head_dim=64,
+        weight_tie_layers=False,
+        fourier_encode_input=False,
+        num_fourier_freq_bands=None,
+        max_fourier_freq=None,
         decoder_ff = False
+        # ToDo: add support for variable number of cross-attends
     ):
         super().__init__()
+        if fourier_encode_input and (not exists(num_fourier_freq_bands) or not exists(max_fourier_freq)):
+            raise Exception('when fourier_encode_input is selected, both num_fourier_freq_bands and max_fourier_freq'
+                            'must be specified, but found {} and {} respectively'.format(num_fourier_freq_bands,
+                                                                                         max_fourier_freq))
+        self.input_axis = num_input_axes
+        self.max_freq = max_fourier_freq
+        self.num_freq_bands = num_fourier_freq_bands
+
+        self.fourier_encode_data = fourier_encode_input
+        fourier_channels = (num_input_axes * ((num_fourier_freq_bands * 2) + 1)) if fourier_encode_input else 0
+        input_dim = fourier_channels + input_dim
+
         self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
 
         self.cross_attend_blocks = nn.ModuleList([
-            PreNorm(latent_dim, Attention(latent_dim, dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = dim),
+            PreNorm(latent_dim, Attention(
+                latent_dim, input_dim, heads = num_cross_att_heads, dim_head = cross_head_dim),
+                    context_dim = input_dim),
             PreNorm(latent_dim, FeedForward(latent_dim))
         ])
 
-        get_latent_attn = lambda: PreNorm(latent_dim, Attention(latent_dim, heads = latent_heads, dim_head = latent_dim_head))
+        get_latent_attn = lambda: PreNorm(latent_dim, Attention(
+            latent_dim, heads = num_self_att_heads, dim_head = latent_head_dim))
         get_latent_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
         get_latent_attn, get_latent_ff = map(cache_fn, (get_latent_attn, get_latent_ff))
 
         self.layers = nn.ModuleList([])
         cache_args = {'_cache': weight_tie_layers}
 
-        for i in range(depth):
+        for i in range(network_depth):
             self.layers.append(nn.ModuleList([
                 get_latent_attn(**cache_args),
                 get_latent_ff(**cache_args)
             ]))
 
-        self.decoder_cross_attn = PreNorm(queries_dim, Attention(queries_dim, latent_dim, heads = cross_heads, dim_head = cross_dim_head), context_dim = latent_dim)
+        self.decoder_cross_attn = PreNorm(queries_dim, Attention(
+            queries_dim, latent_dim, heads = num_cross_att_heads, dim_head = cross_head_dim), context_dim = latent_dim)
         self.decoder_ff = PreNorm(queries_dim, FeedForward(queries_dim)) if decoder_ff else None
 
         self.to_logits = nn.Linear(queries_dim, logits_dim) if exists(logits_dim) else nn.Identity()
@@ -150,7 +182,19 @@ class PerceiverIO(nn.Module):
         mask = None,
         queries = None
     ):
-        b, *_, device = *data.shape, data.device
+        # noinspection PyTupleAssignmentBalance
+        b, *axis, _, device = *data.shape, data.device
+
+        if self.fourier_encode_data:
+            # calculate fourier encoded positions in the range of [-1, 1], for all axis
+
+            axis_pos = list(map(lambda size: torch.linspace(-1., 1., steps = size, device = device), axis))
+            pos = torch.stack(torch.meshgrid(*axis_pos), dim = -1)
+            enc_pos = fourier_encode(pos, self.max_freq, self.num_freq_bands)
+            enc_pos = rearrange(enc_pos, '... n d -> ... (n d)')
+            enc_pos = repeat(enc_pos, '... -> b ...', b = b)
+
+            data = torch.cat((data, enc_pos), dim = -1)
 
         x = repeat(self.latents, 'n d -> b n d', b = b)
 
@@ -187,40 +231,3 @@ class PerceiverIO(nn.Module):
         # final linear out
 
         return self.to_logits(latents)
-
-# Perceiver LM example
-
-class PerceiverLM(nn.Module):
-    def __init__(
-        self,
-        *,
-        dim,
-        num_tokens,
-        max_seq_len,
-        **kwargs
-    ):
-        super().__init__()
-        self.token_emb = nn.Embedding(num_tokens, dim)
-        self.pos_emb = nn.Embedding(max_seq_len, dim)
-
-        self.perceiver_io = PerceiverIO(
-            dim = dim,
-            queries_dim = dim,
-            logits_dim = num_tokens,
-            **kwargs
-        )
-
-    def forward(
-        self,
-        x,
-        mask = None
-    ):
-        n, device = x.shape[1], x.device
-        x = self.token_emb(x)
-
-        pos_emb = self.pos_emb(torch.arange(n, device = device))
-        pos_emb = rearrange(pos_emb, 'n d -> () n d')
-        x = x + pos_emb
-
-        logits = self.perceiver_io(x, mask = mask, queries = x)
-        return logits

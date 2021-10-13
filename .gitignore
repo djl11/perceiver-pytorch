@@ -1,3 +1,14 @@
+__pycache__/
+**/.idea/workspace.xml
+**/.idea/tasks.xml
+**/.idea/usage.statistics.xml
+**/.idea/shelf/
+**/.idea/markdown-navigator*
+*.json
+*.png
+schedules/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
