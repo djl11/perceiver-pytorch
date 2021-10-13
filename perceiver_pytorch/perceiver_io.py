@@ -3,6 +3,7 @@ from math import pi
 from functools import wraps
 from torch import nn, einsum
 import torch.nn.functional as F
+from torch.autograd import Variable
 # noinspection PyProtectedMember
 from einops import rearrange, repeat
 
@@ -129,7 +130,8 @@ class PerceiverIO(nn.Module):
         cross_head_dim=64,
         latent_head_dim=64,
         weight_tie_layers=False,
-        learn_query=False,  # ToDo: implement this
+        learn_query=False,
+        num_queries=None,
         fourier_encode_input=False,
         num_fourier_freq_bands=None,
         max_fourier_freq=None,
@@ -145,6 +147,9 @@ class PerceiverIO(nn.Module):
         self._output_dim = output_dim
         self._max_freq = max_fourier_freq
         self._num_freq_bands = num_fourier_freq_bands
+
+        # ToDo: set the correct initializatin scheme for the query here
+        self._queries = Variable(torch.randn(num_queries, queries_dim), requires_grad=True) if learn_query else None
 
         self._fourier_encode_data = fourier_encode_input
         fourier_channels = (num_input_axes * ((num_fourier_freq_bands * 2) + 1)) if fourier_encode_input else 0
@@ -217,7 +222,10 @@ class PerceiverIO(nn.Module):
             x = self_ff(x) + x
 
         if not exists(queries):
-            return x
+            if exists(self._queries):
+                queries = repeat(self._queries, 'n c -> b n c', b=b)
+            else:
+                return x
 
         # make sure queries contains batch dimension
 
