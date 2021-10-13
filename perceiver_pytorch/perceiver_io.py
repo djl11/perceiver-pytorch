@@ -118,16 +118,18 @@ class PerceiverIO(nn.Module):
         self,
         input_dim,
         num_input_axes,
-        queries_dim,  # ToDo: label this correctly
-        logits_dim,  # ToDo: label this correctly
-        network_depth,
-        num_latents = 512,
+        output_dim,
+        num_output_axes,
+        queries_dim=1024,
+        network_depth=6,
+        num_latents = 256,
         latent_dim=512,
         num_cross_att_heads=1,
         num_self_att_heads=8,
         cross_head_dim=64,
         latent_head_dim=64,
         weight_tie_layers=False,
+        learn_query=False,  # ToDo: implement this
         fourier_encode_input=False,
         num_fourier_freq_bands=None,
         max_fourier_freq=None,
@@ -174,7 +176,7 @@ class PerceiverIO(nn.Module):
             queries_dim, latent_dim, heads = num_cross_att_heads, dim_head = cross_head_dim), context_dim = latent_dim)
         self.decoder_ff = PreNorm(queries_dim, FeedForward(queries_dim)) if decoder_ff else None
 
-        self.to_logits = nn.Linear(queries_dim, logits_dim) if exists(logits_dim) else nn.Identity()
+        self.to_logits = nn.Linear(queries_dim, output_dim) if exists(output_dim) else nn.Identity()
 
     def forward(
         self,
