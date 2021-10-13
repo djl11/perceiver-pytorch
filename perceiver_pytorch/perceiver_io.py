@@ -141,17 +141,18 @@ class PerceiverIO(nn.Module):
             raise Exception('when fourier_encode_input is selected, both num_fourier_freq_bands and max_fourier_freq'
                             'must be specified, but found {} and {} respectively'.format(num_fourier_freq_bands,
                                                                                          max_fourier_freq))
-        self.input_axis = num_input_axes
-        self.max_freq = max_fourier_freq
-        self.num_freq_bands = num_fourier_freq_bands
+        self._input_axis = num_input_axes
+        self._output_dim = output_dim
+        self._max_freq = max_fourier_freq
+        self._num_freq_bands = num_fourier_freq_bands
 
-        self.fourier_encode_data = fourier_encode_input
+        self._fourier_encode_data = fourier_encode_input
         fourier_channels = (num_input_axes * ((num_fourier_freq_bands * 2) + 1)) if fourier_encode_input else 0
         input_dim = fourier_channels + input_dim
 
-        self.latents = nn.Parameter(torch.randn(num_latents, latent_dim))
+        self._latents = nn.Parameter(torch.randn(num_latents, latent_dim))
 
-        self.cross_attend_blocks = nn.ModuleList([
+        self._cross_attend_blocks = nn.ModuleList([
             PreNorm(latent_dim, Attention(
                 latent_dim, input_dim, heads = num_cross_att_heads, dim_head = cross_head_dim),
                     context_dim = input_dim),
@@ -163,20 +164,20 @@ class PerceiverIO(nn.Module):
         get_latent_ff = lambda: PreNorm(latent_dim, FeedForward(latent_dim))
         get_latent_attn, get_latent_ff = map(cache_fn, (get_latent_attn, get_latent_ff))
 
-        self.layers = nn.ModuleList([])
+        self._layers = nn.ModuleList([])
         cache_args = {'_cache': weight_tie_layers}
 
         for i in range(network_depth):
-            self.layers.append(nn.ModuleList([
+            self._layers.append(nn.ModuleList([
                 get_latent_attn(**cache_args),
                 get_latent_ff(**cache_args)
             ]))
 
-        self.decoder_cross_attn = PreNorm(queries_dim, Attention(
+        self._decoder_cross_attn = PreNorm(queries_dim, Attention(
             queries_dim, latent_dim, heads = num_cross_att_heads, dim_head = cross_head_dim), context_dim = latent_dim)
-        self.decoder_ff = PreNorm(queries_dim, FeedForward(queries_dim)) if decoder_ff else None
+        self._decoder_ff = PreNorm(queries_dim, FeedForward(queries_dim)) if decoder_ff else None
 
-        self.to_logits = nn.Linear(queries_dim, output_dim) if exists(output_dim) else nn.Identity()
+        self._to_logits = nn.Linear(queries_dim, output_dim) if exists(output_dim) else nn.Identity()
 
     def forward(
         self,
@@ -187,20 +188,22 @@ class PerceiverIO(nn.Module):
         # noinspection PyTupleAssignmentBalance
         b, *axis, _, device = *data.shape, data.device
 
-        if self.fourier_encode_data:
+        if self._fourier_encode_data:
             # calculate fourier encoded positions in the range of [-1, 1], for all axis
 
             axis_pos = list(map(lambda size: torch.linspace(-1., 1., steps = size, device = device), axis))
             pos = torch.stack(torch.meshgrid(*axis_pos), dim = -1)
-            enc_pos = fourier_encode(pos, self.max_freq, self.num_freq_bands)
+            enc_pos = fourier_encode(pos, self._max_freq, self._num_freq_bands)
             enc_pos = rearrange(enc_pos, '... n d -> ... (n d)')
             enc_pos = repeat(enc_pos, '... -> b ...', b = b)
 
             data = torch.cat((data, enc_pos), dim = -1)
 
-        x = repeat(self.latents, 'n d -> b n d', b = b)
+        data = rearrange(data, 'b ... d -> b (...) d')
 
-        cross_attn, cross_ff = self.cross_attend_blocks
+        x = repeat(self._latents, 'n d -> b n d', b = b)
+
+        cross_attn, cross_ff = self._cross_attend_blocks
 
         # cross attention only happens once for Perceiver IO
 
@@ -209,7 +212,7 @@ class PerceiverIO(nn.Module):
 
         # layers
 
-        for self_attn, self_ff in self.layers:
+        for self_attn, self_ff in self._layers:
             x = self_attn(x) + x
             x = self_ff(x) + x
 
@@ -220,16 +223,24 @@ class PerceiverIO(nn.Module):
 
         if queries.ndim == 2:
             queries = repeat(queries, 'n d -> b n d', b = b)
+        queries_shape = list(queries.shape)
+
+        queries = rearrange(queries, 'b ... d -> b (...) d')
+
+        # ToDo: add optional positional encoding to queries here!
 
         # cross attend from decoder queries to latents
         
-        latents = self.decoder_cross_attn(queries, context = x)
+        latents = self._decoder_cross_attn(queries, context = x)
 
         # optional decoder feedforward
 
-        if exists(self.decoder_ff):
-            latents = latents + self.decoder_ff(latents)
+        if exists(self._decoder_ff):
+            latents = latents + self._decoder_ff(latents)
 
         # final linear out
 
-        return self.to_logits(latents)
+        ret = self._to_logits(latents)
+
+        # reshape to correct number of axes
+        return torch.reshape(ret, queries_shape[:-1] + [self._output_dim])
