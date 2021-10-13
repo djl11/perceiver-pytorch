@@ -120,7 +120,6 @@ class PerceiverIO(nn.Module):
         input_dim,
         num_input_axes,
         output_dim,
-        num_output_axes,
         queries_dim=1024,
         network_depth=6,
         num_latents = 256,
@@ -131,7 +130,7 @@ class PerceiverIO(nn.Module):
         latent_head_dim=64,
         weight_tie_layers=False,
         learn_query=False,
-        num_queries=None,
+        query_shape=None,
         fourier_encode_input=False,
         num_fourier_freq_bands=None,
         max_fourier_freq=None,
@@ -147,9 +146,10 @@ class PerceiverIO(nn.Module):
         self._output_dim = output_dim
         self._max_freq = max_fourier_freq
         self._num_freq_bands = num_fourier_freq_bands
+        query_shape = default(query_shape, [])
 
         # ToDo: set the correct initializatin scheme for the query here
-        self._queries = Variable(torch.randn(num_queries, queries_dim), requires_grad=True) if learn_query else None
+        self._queries = nn.Parameter(torch.randn(*query_shape, queries_dim)) if learn_query else None
 
         self._fourier_encode_data = fourier_encode_input
         fourier_channels = (num_input_axes * ((num_fourier_freq_bands * 2) + 1)) if fourier_encode_input else 0
@@ -223,19 +223,13 @@ class PerceiverIO(nn.Module):
 
         if not exists(queries):
             if exists(self._queries):
-                queries = repeat(self._queries, 'n c -> b n c', b=b)
+                queries = repeat(self._queries, '... -> b ...', b=b)
             else:
                 return x
 
-        # make sure queries contains batch dimension
-
-        if queries.ndim == 2:
-            queries = repeat(queries, 'n d -> b n d', b = b)
         queries_shape = list(queries.shape)
 
         queries = rearrange(queries, 'b ... d -> b (...) d')
-
-        # ToDo: add optional positional encoding to queries here!
 
         # cross attend from decoder queries to latents
         
