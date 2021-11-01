@@ -1,9 +1,8 @@
 import torch
 from math import pi
+from torch import nn
 from functools import wraps
-from torch import nn, einsum
 import torch.nn.functional as F
-from torch.autograd import Variable
 # noinspection PyProtectedMember
 from einops import rearrange, repeat
 
@@ -97,7 +96,7 @@ class Attention(nn.Module):
 
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), (q, k, v))
 
-        sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
+        sim = torch.einsum('b i d, b j d -> b i j', q, k) * self.scale
 
         if exists(mask):
             mask = rearrange(mask, 'b ... -> b (...)')
@@ -108,7 +107,7 @@ class Attention(nn.Module):
         # attention, what we cannot get enough of
         attn = sim.softmax(dim = -1)
 
-        out = einsum('b i j, b j d -> b i d', attn, v)
+        out = torch.einsum('b i j, b j d -> b i d', attn, v)
         out = rearrange(out, '(b h) n d -> b n (h d)', h = h)
         return self.to_out(out)
 
