@@ -39,7 +39,7 @@ def test_perceiver_io_classification(batch_size, img_dims, learn_query):
 
     # inputs
     img = torch.randn([batch_size] + img_dims + [3])
-    queries = None if learn_query else torch.randn(batch_size, 1, 32)
+    queries = None if learn_query else torch.randn(batch_size, 1, 1024)
 
     # model call
     model = get_perceiver_io(input_dim=input_dim,
@@ -70,7 +70,7 @@ def test_perceiver_io_flow(batch_size, img_dims):
 
     # inputs
     img = torch.randn([batch_size, 2] + img_dims + [3])
-    queries = torch.randn([batch_size] + img_dims + [32])
+    queries = torch.randn([batch_size] + img_dims + [1024])
 
     # model call
     model = get_perceiver_io(input_dim=input_dim,
