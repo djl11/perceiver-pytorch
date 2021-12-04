@@ -1,3 +1,4 @@
+import ivy
 import torch
 from math import pi
 from torch import nn
@@ -32,7 +33,7 @@ def fourier_encode(x, max_freq, num_bands = 4):
     device, dtype, orig_x = x.device, x.dtype, x
 
     scales = torch.linspace(1., max_freq / 2, num_bands, device = device, dtype = dtype)
-    scales = scales[(*((None,) * (len(x.shape) - 1)), Ellipsis)]
+    scales = scales[(*((None,) * (len(x.shape) - len(scales.shape))), Ellipsis)]
 
     x = x * scales * pi
     x = torch.cat([x.sin(), x.cos()], dim = -1)
@@ -131,16 +132,12 @@ class PerceiverIO(nn.Module):
         learn_query=False,
         query_shape=None,
         fourier_encode_input=False,
-        num_fourier_freq_bands=None,
+        num_fourier_freq_bands=6,
         max_fourier_freq=None,
         decoder_ff = False
         # ToDo: add support for variable number of cross-attends
     ):
         super().__init__()
-        if fourier_encode_input and (not exists(num_fourier_freq_bands) or not exists(max_fourier_freq)):
-            raise Exception('when fourier_encode_input is selected, both num_fourier_freq_bands and max_fourier_freq'
-                            'must be specified, but found {} and {} respectively'.format(num_fourier_freq_bands,
-                                                                                         max_fourier_freq))
         self._input_axis = num_input_axes
         self._output_dim = output_dim
         self._max_freq = max_fourier_freq
@@ -197,6 +194,8 @@ class PerceiverIO(nn.Module):
 
             axis_pos = list(map(lambda size: torch.linspace(-1., 1., steps = size, device = device), axis))
             pos = torch.stack(torch.meshgrid(*axis_pos), dim = -1)
+            if not ivy.exists(self._max_freq):
+                self._max_freq = ivy.to_scalar(ivy.reduce_mean(ivy.array(axis, dtype_str='float32')))
             enc_pos = fourier_encode(pos, self._max_freq, self._num_freq_bands)
             enc_pos = rearrange(enc_pos, '... n d -> ... (n d)')
             enc_pos = repeat(enc_pos, '... -> b ...', b = b)
